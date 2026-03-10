@@ -41,18 +41,19 @@ Trigger provides inactivity context to agent:
     "trigger": "inactivity",
     "user_id": "user-123",
     "days_inactive": 9,
-    "last_interaction_date": "2026-03-01T10:30:00Z",
-    "user_circle_names": ["Friends", "Work"]  # optional: for future v1 personalization
+    "last_interaction_date": "2026-03-01T10:30:00Z"
 }
 ```
 
 ### Claude API Configuration
 - **Model:** `claude-3-5-haiku-20241022` (fast, cost-effective for simple decisions)
 - **Max tokens:** 256 (agent only needs to decide + call tool, no long reasoning)
-- **Temperature:** 0.7 (slight creativity for friendly messages, not deterministic)
+- **Temperature:** 0.7 — Controls randomness in Claude's output (0 = deterministic/focused, 1 = random/creative). At 0.7, Claude generates varied but coherent re-engagement messages (not robotic templates, not unpredictable).
 - **Tools:** `receive_message` (1 tool only for v0)
 
 ### Tool Definitions
+**Agent declares this schema to Claude** (not from MCP Server). When Claude decides to call a tool, it returns this exact structure. The agent then executes this against the Pinglo MCP Server.
+
 ```json
 {
     "name": "receive_message",
@@ -73,6 +74,8 @@ Trigger provides inactivity context to agent:
     }
 }
 ```
+
+**MCP Server's contract:** Expects POST to `http://localhost:8000/messages/` with `{"user_id": "...", "message": "..."}`. Agent bridges the two by extracting Claude's tool call and translating it into MCP Server HTTP request.
 
 ### System Prompt (Context for Claude)
 ```
@@ -95,45 +98,69 @@ Example bad message: "You haven't used Pinglo in 9 days. Our app is better witho
 ```
 
 ### Agent Loop Termination
-Agent terminates when:
-- `stop_reason == "end_turn"` (Claude decides no tool call needed)
-- Tool `receive_message` executes and returns (Claude is done)
-- Max iterations = 3 (safety limit to prevent infinite loops)
+
+**High-level flow:**
+```
+Agent sends context to Claude
+        ↓
+Claude reads context, decides: "Should I call a tool?"
+        ↓
+Claude responds with stop_reason: either "tool_use" or "end_turn"
+        ├─ "tool_use" → Claude decided to call receive_message tool
+        │              Agent executes tool → sends result back to Claude → loops
+        └─ "end_turn" → Claude finished (no tool call needed)
+                        Agent stops
+```
+
+**Termination conditions:**
+- `stop_reason == "end_turn"` — Claude finished reasoning, decided no action needed (rare for inactivity, but possible)
+- `stop_reason == "tool_use"` → Tool executes → Agent receives result → Claude stops (tool_use loop only runs once per context)
+- Max iterations = 3 — Safety limit to prevent infinite loops (shouldn't reach this in practice)
 
 ---
 
 ## 3. Key Components
 
 ### Trigger (triggers/inactivity_trigger.py)
-**Responsibility:** Detect inactive users and provide context to agent
+**Responsibility:** Query Pinglo backend for inactive users, invoke agent with context for each user
+
+**Architecture principle:** Trigger handles "detecting situations" (backend queries). Agent handles "deciding what to do" (Claude reasoning).
 
 **Input:**
-- Pinglo backend user data (user_id, last_interaction_timestamp, user_circles)
+- Runs periodically (e.g., daily) to detect inactive users
+- Queries Pinglo backend directly (triggers can query DB, agents cannot)
 - Inactivity threshold: 7 days (hardcoded in v0)
 
 **Process:**
 ```python
-def get_inactive_users(days_threshold=7):
-    """Query Pinglo backend for inactive users"""
-    # GET /users/?last_interaction=< now - 7_days
-    # Returns: [{"user_id": "...", "last_interaction_timestamp": "...", "circles": [...]}, ...]
+def inactivity_trigger():
+    """Main trigger loop"""
+    # Step 1: Query Pinglo backend for inactive users
+    inactive_users = query_pinglo_backend(
+        query="SELECT * FROM users WHERE last_interaction_timestamp < now() - interval '7 days'"
+    )
 
-def create_inactivity_context(user):
-    """Format user data into context for agent"""
-    return {
-        "trigger": "inactivity",
-        "user_id": user["user_id"],
-        "days_inactive": (now - user["last_interaction_timestamp"]).days,
-        "last_interaction_date": user["last_interaction_timestamp"],
-        "user_circle_names": [c["name"] for c in user.get("circles", [])]
-    }
+    # Step 2: For EACH inactive user, invoke the agent with context
+    for user in inactive_users:
+        context = {
+            "trigger": "inactivity",
+            "user_id": user["user_id"],
+            "days_inactive": (now - user["last_interaction_timestamp"]).days,
+            "last_interaction_date": user["last_interaction_timestamp"]
+        }
+
+        # Invoke agent (agent receives pre-computed context, doesn't query backend)
+        result = inactivity_agent.run(context)
+
+        if not result["success"]:
+            logger.error(f"Agent failed for user {user['user_id']}: {result['error']}")
 ```
 
-**Output:** List of context dicts for agent to process
+**Output:** For each inactive user, invoke agent once with context
 
 **Error handling:**
-- If backend query fails: Log error, skip batch (don't crash trigger)
-- If user doesn't exist: Include in results anyway (agent will handle gracefully)
+- If backend query fails: Log error, skip batch (don't crash trigger or agent)
+- If user record is stale: Agent will handle gracefully (MCP Server will reject invalid user_id)
 
 ### Agent (agents/inactivity_agent.py)
 **Responsibility:** Receive inactivity context, call Claude, execute tool
