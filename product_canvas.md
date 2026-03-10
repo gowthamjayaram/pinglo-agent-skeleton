@@ -18,9 +18,11 @@ One sentence. What does this agent feature do? Who benefits?
 
 ## 3. Target Users
 
+**Persona:** Real users of Pinglo (e.g., User, Circle). NOT system components (Agent, Trigger, Tool).
+
 | Persona | Impact |
 |---|---|
-| [User/Developer] | [Primary/Secondary] — [why they care] |
+| [User/Circle] | [Primary/Secondary] — [why they care] |
 
 ---
 
@@ -34,11 +36,15 @@ One sentence. What does this agent feature do? Who benefits?
 
 ## 5. User Stories & Acceptance Criteria
 
+**IMPORTANT:** Acceptance criteria describe what the USER SEES/EXPERIENCES, NOT how the system implements it. ❌ Don't write: "agent calls Claude API". ✅ Do write: "user receives a message".
+
+**Persona in Stories:** Use the persona from Section 3 (User, Circle, etc.). ❌ Never write "As an Agent", "As a Trigger", or "As a Tool". The agent/trigger are implementation details, not users.
+
 ### Story 1: [User Story Title]
 > As a **[Persona]**, I want [what], so that [why].
 
 **Acceptance criteria:**
-- [ ] Given [context], when [action], then [result]
+- [ ] Given [user situation], when [user action], then [user outcome/experience]
 
 ---
 
